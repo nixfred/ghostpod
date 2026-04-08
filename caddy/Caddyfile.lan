@@ -1,0 +1,8 @@
+{
+    default_sni {$LAN_HOST}
+}
+
+https://{$LAN_HOST} {
+    tls internal
+    reverse_proxy orchestrator:8080
+}

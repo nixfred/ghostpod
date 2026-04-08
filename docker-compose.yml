@@ -1,0 +1,51 @@
+services:
+  caddy:
+    build: ./caddy
+    container_name: ghostpod-caddy
+    hostname: ${TS_HOSTNAME:-ghostpod}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY:-}
+      - TS_HOSTNAME=${TS_HOSTNAME:-ghostpod}
+      - LAN_HOST=${LAN_HOST:-localhost}
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+
+  orchestrator:
+    build: ./orchestrator
+    container_name: ghostpod-orchestrator
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - SESSION_IMAGE=ghostpod-session:latest
+      - SESSION_NETWORK=ghostpod-sessions
+      - ADMIN_USER=${ADMIN_USER:-}
+      - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH:-}
+      - SECRET_KEY=${SECRET_KEY:-}
+    networks:
+      - default
+      - sessions
+    restart: unless-stopped
+
+  # Exists only to build the session image during `docker compose up --build`.
+  # The orchestrator spawns instances of this image at runtime — it is not
+  # a long-running compose service.
+  session:
+    build: ./terminal
+    image: ghostpod-session:latest
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
+networks:
+  sessions:
+    name: ghostpod-sessions
+
+volumes:
+  caddy-data:
+  caddy-config:
