@@ -1,27 +1,33 @@
 # ghostpod
 
-A self-hosted browser terminal with per-session ephemeral containers, mobile support, and optional Tailscale or LAN TLS — deployable with a single `docker compose up`.
-
-Each browser session gets a fresh, isolated container that is destroyed on disconnect. Nothing persists between sessions.
+A self-hosted browser terminal that spins up a fresh, isolated container for every session and tears it down on disconnect. Nothing persists. One command to run.
 
 ---
 
-## Features
+## Why
 
-- **Per-session isolation** — every connection spawns a fresh container, destroyed on disconnect
-- **Auth** — styled login page with bcrypt-verified credentials and signed session cookies
-- **Tailscale mode** — Caddy joins your tailnet, gets a real TLS cert automatically
-- **LAN mode** — Caddy's internal CA issues a self-signed cert for your local IP or hostname
-- **Mobile-friendly** — toolbar with Ctrl, Esc, Tab, arrow keys; touch text selection; iOS keyboard awareness
-- **Sandboxed containers** — dangerous capabilities dropped, memory and PID limits enforced
+My iPad + keyboard is genuinely one of my favourite ways to work. Portable, great battery, proper keyboard — the problem is there's no decent Linux terminal on iPadOS. iSH exists but it's an x86 emulator running under the hood and it crawls the moment you ask anything of it.
+
+What I wanted was a real shell I could hit from a browser tab, on any device, that felt clean every time I opened it. So I built ghostpod.
+
+---
+
+## What it does
+
+- **Ephemeral sessions** — every connection gets a fresh container. Close the tab, it's gone.
+- **Auth** — login page with bcrypt passwords and signed session cookies, or skip it entirely on a trusted network
+- **Tailscale mode** — Caddy joins your tailnet and gets a real TLS cert automatically. No cert warnings, works on iOS.
+- **LAN mode** — Caddy's internal CA for local IP/hostname access. Install the CA once per device.
+- **Mobile toolbar** — Ctrl, Esc, Tab, arrow keys as buttons. Touch selection. iOS keyboard handling.
+- **Sandboxed** — dropped capabilities, 512 MB memory cap, 256 PID limit per session
 
 ---
 
 ## Requirements
 
-- Docker and Docker Compose
-- Docker socket access on the host (`/var/run/docker.sock`)
-- For Tailscale mode: a [Tailscale account](https://tailscale.com) and an auth key
+- Docker + Docker Compose
+- The Docker socket (`/var/run/docker.sock`) — the orchestrator needs it to spawn containers at runtime
+- A [Tailscale](https://tailscale.com) account + auth key if you want Tailscale mode
 
 ---
 
@@ -31,7 +37,7 @@ Each browser session gets a fresh, isolated container that is destroyed on disco
 git clone https://github.com/Monear/ghostpod
 cd ghostpod
 cp .env.example .env
-# Edit .env — see Configuration below
+# fill in .env — see below
 docker compose up --build
 ```
 
@@ -39,99 +45,85 @@ docker compose up --build
 
 ## Configuration
 
-All configuration lives in `.env`. Copy `.env.example` to get started.
+Everything lives in `.env`. Start from `.env.example`.
 
-### Tailscale mode (recommended)
+### Tailscale mode (what I use)
 
-Caddy joins your tailnet as a node and gets a real Let's Encrypt certificate automatically. No browser warnings, no CA installation needed on any device.
+Caddy joins your tailnet as a node. Real Let's Encrypt cert, no browser warnings, works from my iPad without any extra setup.
 
 ```env
-# Auth key from https://login.tailscale.com/admin/settings/keys
-# Use a reusable, ephemeral key
+# from https://login.tailscale.com/admin/settings/keys — use a reusable ephemeral key
 TS_AUTHKEY=tskey-auth-...
 
-# Must match the machine name in your Tailscale admin console
+# must match the machine name in your Tailscale admin console
 TS_HOSTNAME=ghostpod
 ```
 
-Access at `https://ghostpod.<your-tailnet>.ts.net`.
+Hit it at `https://ghostpod.<your-tailnet>.ts.net`.
 
 ### LAN mode
 
-Caddy issues a certificate via its internal CA for your local IP or hostname. Set `TS_AUTHKEY` to empty (or omit it) to use LAN mode.
+Leave `TS_AUTHKEY` empty and Caddy will use its internal CA to issue a self-signed cert for your local IP or hostname.
 
 ```env
 TS_AUTHKEY=
 
-# IP or hostname browsers will connect to
 LAN_HOST=192.168.1.100
 ```
 
-#### Trusting the CA on your devices
+#### Installing the CA
 
-The first time Caddy starts it creates a local CA. Export and install it once per device for a trusted green padlock.
+First boot, Caddy creates a local CA. Export it and install it once per device:
 
 ```bash
-# Export the CA cert
 docker exec ghostpod-caddy \
   cat /data/caddy/pki/authorities/local/root.crt > caddy-local-ca.crt
 ```
 
-- **macOS / iOS** — open the `.crt` file, add to Keychain, set to Always Trust
+- **macOS / iOS** — open the `.crt`, add to Keychain, set to Always Trust
 - **Android** — Settings → Security → Install certificate
-- **Windows** — double-click the `.crt`, install to Trusted Root CAs
-- **Linux** — copy to `/usr/local/share/ca-certificates/` and run `update-ca-certificates`
+- **Windows** — double-click, install to Trusted Root CAs
+- **Linux** — drop in `/usr/local/share/ca-certificates/`, run `update-ca-certificates`
 
 ### Auth
 
-Auth is handled by the orchestrator. When `ADMIN_USER` and `ADMIN_PASSWORD_HASH` are set, an unauthenticated request redirects to a login page.
+Set `ADMIN_USER` and `ADMIN_PASSWORD_HASH` and unauthenticated requests get redirected to a login page. Leave them empty to run open — fine if it's Tailscale-only.
 
 ```env
 ADMIN_USER=admin
 
-# Generate a bcrypt hash:
+# generate the hash:
 #   docker run --rm caddy:latest caddy hash-password --plaintext 'yourpassword'
-# Escape every $ in the hash as $$ so docker-compose doesn't expand it.
-# Example: $2a$14$abc... becomes $$2a$$14$$abc...
+# escape every $ as $$ or docker-compose will mangle it
 ADMIN_PASSWORD_HASH=$$2a$$14$$...
 
-# Signs session cookies — generate with: openssl rand -hex 32
-# If unset, a random key is used (sessions lost on restart).
+# signs session cookies — generate with: openssl rand -hex 32
+# leave empty and a random key is used (sessions won't survive restarts)
 SECRET_KEY=
 ```
 
-Leave `ADMIN_PASSWORD_HASH` empty to run without authentication (useful for initial setup or trusted-network-only deployments).
-
 ---
 
-## Architecture
+## How it works
 
 ```
 Browser
-  └── Caddy  (TLS termination — Tailscale cert or internal CA)
+  └── Caddy  (TLS — Tailscale cert or internal CA)
         └── Orchestrator  (auth, session lifecycle, WebSocket proxy)
-              └── Session container  (ephemeral ttyd + zsh, destroyed on disconnect)
+              └── Session container  (ttyd + zsh, gone on disconnect)
 ```
 
-**Caddy** handles TLS only — either via the caddy-tailscale module (real LE certs) or `tls internal` (self-signed). It proxies everything to the orchestrator.
+**Caddy** does TLS and proxies everything to the orchestrator. That's it.
 
-**Orchestrator** (`orchestrator/main.py`) is a small Python/aiohttp service that:
-- Serves the terminal HTML (pre-built with mobile toolbar at image build time)
-- Handles login and session cookie verification
-- Spawns a Docker container per WebSocket connection
-- Bidirectionally proxies WebSocket frames between the browser and the container's ttyd process
-- Stops and removes the container when either side disconnects
+**Orchestrator** is a small Python/aiohttp service. It serves the terminal page, checks auth, spawns a container per WebSocket connection, and bidirectionally proxies frames between the browser and the container's ttyd process. When either side disconnects, it stops and removes the container.
 
-**Session containers** run `ttyd --once`, so they exit as soon as the first client disconnects. Combined with `--rm`, the container is removed immediately. Each container gets:
-- A friendly random hostname (`eager-narwhal`, `polar-kestrel`, etc.) visible in the shell prompt
-- Dropped capabilities (`SYS_ADMIN`, `NET_ADMIN`, `SYS_MODULE`, `SYS_PTRACE`, and others)
-- Memory limit (512 MB) and PID limit (256)
+**Session containers** run `ttyd --once` so they self-exit the moment the client disconnects. Each one gets a random hostname (`eager-narwhal`, `polar-kestrel`, etc.), dropped capabilities, and hard resource limits.
 
 ---
 
-## Customising the shell environment
+## Customising the shell
 
-Dotfiles are baked into the session image (`terminal/`). Edit and rebuild to change the shell environment:
+Dotfiles live in `terminal/` and are baked into the session image at build time. Edit them and run `docker compose up --build` to rebuild.
 
 ```
 terminal/
@@ -140,12 +132,14 @@ terminal/
   .tmux.conf      — tmux config
 ```
 
-```bash
-docker compose up --build
-```
-
 ---
 
 ## License
 
 MIT
+
+---
+
+## Notice
+
+Built with AI assistance (Anthropic Claude). Reviewed by me. Provided as-is — see [LICENSE](./LICENSE).
