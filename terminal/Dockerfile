@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     vim \
     jq \
     tmux \
+    sudo \
     # networking
     openssh-client \
     iproute2 \
@@ -23,24 +24,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     ripgrep \
     fd-find \
-    # shell
-    zsh \
-    zsh-autosuggestions \
-    zsh-syntax-highlighting \
     ca-certificates \
     && ln -sf $(which fdfind) /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Starship
-RUN curl -sS https://starship.rs/install.sh | sh -s -- --yes
+# Create pi user with passwordless sudo
+RUN useradd -m -s /bin/bash pi \
+    && echo 'pi ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/pi \
+    && chmod 440 /etc/sudoers.d/pi
 
-# Dotfiles are baked in — sessions are ephemeral, no home volume
-RUN mkdir -p /root/.config
-COPY .zshrc /root/.zshrc
-COPY starship.toml /root/.config/starship.toml
-COPY .tmux.conf /root/.tmux.conf
+# Install nixbash as pi
+USER pi
+RUN curl -sL https://raw.githubusercontent.com/nixfred/nixbash/main/install.sh | bash
+USER root
 
-RUN chsh -s $(which zsh)
+# Copy tmux config for pi
+COPY .tmux.conf /home/pi/.tmux.conf
+RUN chown pi:pi /home/pi/.tmux.conf
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

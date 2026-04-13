@@ -3,9 +3,6 @@ services:
     build: ./caddy
     container_name: ghostpod-caddy
     hostname: ${TS_HOSTNAME:-ghostpod}
-    ports:
-      - "80:80"
-      - "443:443"
     volumes:
       - caddy-data:/data
       - caddy-config:/config

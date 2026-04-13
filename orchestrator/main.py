@@ -308,6 +308,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 mem_limit="512m",
                 memswap_limit="512m",
                 pids_limit=256,
+                volumes={"/home/pi/ghostpod/.ssh": {"bind": "/tmp/.host-ssh", "mode": "ro"}},
             ),
         )
         log.info(f"[{session_id}] Container {container.short_id} started as '{session_name}'")
