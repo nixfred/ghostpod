@@ -1,12 +1,14 @@
 {
     tailscale {
-        hostname {$TS_HOSTNAME}
-        state_dir /data/tailscale
+        {$TS_HOSTNAME} {
+            hostname {$TS_HOSTNAME}
+            state_dir /data/tailscale
+        }
     }
 }
 
 :443 {
-    bind tailscale/
+    bind tailscale/{$TS_HOSTNAME}
     tls {
         get_certificate tailscale
     }
