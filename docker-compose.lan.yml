@@ -1,0 +1,7 @@
+# Expose Caddy on host ports 80/443 for LAN mode.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.lan.yml up --build
+services:
+  caddy:
+    ports:
+      - "80:80"
+      - "443:443"

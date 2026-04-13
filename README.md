@@ -38,7 +38,12 @@ git clone https://github.com/Monear/ghostpod
 cd ghostpod
 cp .env.example .env
 # fill in .env — see below
+
+# Tailscale mode (default)
 docker compose up --build
+
+# LAN mode — exposes ports 80/443 on the host
+docker compose -f docker-compose.yml -f docker-compose.lan.yml up --build
 ```
 
 ---
@@ -63,7 +68,11 @@ Hit it at `https://ghostpod.<your-tailnet>.ts.net`.
 
 ### LAN mode
 
-Leave `TS_AUTHKEY` empty and Caddy will use its internal CA to issue a self-signed cert for your local IP or hostname.
+Leave `TS_AUTHKEY` empty and Caddy will use its internal CA to issue a self-signed cert for your local IP or hostname. LAN mode needs host port bindings, so use the override file:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.lan.yml up --build
+```
 
 ```env
 TS_AUTHKEY=
