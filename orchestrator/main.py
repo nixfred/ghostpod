@@ -301,7 +301,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 name=f"{session_name}-{session_id}",
                 hostname=session_name,
                 labels={"ghostpod.session": session_id},
-                security_opt=["no-new-privileges"],
+                # security_opt removed — breaks sudo for non-root user
                 cap_drop=["SYS_ADMIN", "NET_ADMIN", "SYS_MODULE", "SYS_RAWIO",
                            "SYS_BOOT", "SYS_PTRACE", "AUDIT_WRITE", "AUDIT_CONTROL",
                            "MAC_ADMIN", "MAC_OVERRIDE", "SYSLOG"],
