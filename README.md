@@ -25,7 +25,7 @@ What I wanted was a real shell I could hit from a browser tab, on any device, th
 
 ## Requirements
 
-- Docker + Docker Compose
+- Docker + [Docker Compose v2](https://docs.docker.com/compose/install/) (the `docker compose` plugin, not the legacy `docker-compose` binary)
 - The Docker socket (`/var/run/docker.sock`) — the orchestrator needs it to spawn containers at runtime
 - A [Tailscale](https://tailscale.com) account + auth key if you want Tailscale mode
 
@@ -55,7 +55,7 @@ Caddy joins your tailnet as a node. Real Let's Encrypt cert, no browser warnings
 # from https://login.tailscale.com/admin/settings/keys — use a reusable ephemeral key
 TS_AUTHKEY=tskey-auth-...
 
-# must match the machine name in your Tailscale admin console
+# the name Caddy registers as on your tailnet — does not need to pre-exist
 TS_HOSTNAME=ghostpod
 ```
 
