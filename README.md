@@ -34,7 +34,7 @@ What I wanted was a real shell I could hit from a browser tab, on any device, th
 ## Quick Start
 
 ```bash
-git clone https://github.com/Monear/ghostpod
+git clone https://github.com/nixfred/ghostpod
 cd ghostpod
 cp .env.example .env
 # fill in .env — see below
@@ -85,6 +85,41 @@ docker exec ghostpod-caddy \
 - **Windows** — double-click, install to Trusted Root CAs
 - **Linux** — drop in `/usr/local/share/ca-certificates/`, run `update-ca-certificates`
 
+### Behind an external reverse proxy (Traefik, nginx, etc.)
+
+If you already have a reverse proxy that handles TLS (Traefik, nginx, Caddy running elsewhere), you can skip the bundled Caddy and point it directly at the orchestrator on port `8080`.
+
+Drop in a `docker-compose.override.yml`:
+
+```yaml
+services:
+  caddy:
+    profiles: [disabled]      # don't start the bundled Caddy
+
+  orchestrator:
+    networks:
+      - default
+      - sessions
+      - proxy                 # your existing reverse-proxy network
+    labels:
+      # --- example: Traefik v3 labels ---
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.ghostpod.rule=Host(`shell.example.com`)
+      - traefik.http.routers.ghostpod.entrypoints=websecure
+      - traefik.http.routers.ghostpod.tls=true
+      - traefik.http.services.ghostpod.loadbalancer.server.port=8080
+
+networks:
+  proxy:
+    external: true
+```
+
+Two things to know:
+
+- **WebSockets must be HTTP/1.1 to the backend.** The orchestrator uses aiohttp and will reject an HTTP/2 upgrade with `400 No WebSocket UPGRADE hdr`. Traefik and nginx already default to HTTP/1.1 upstream; just don't force HTTP/2-to-backend.
+- **No auth is set by default**, so the reverse proxy is your only front door — either keep it on a trusted network (Tailscale, VPN, LAN) or set `ADMIN_USER` + `ADMIN_PASSWORD_HASH` in `.env`.
+
 ### Auth
 
 Set `ADMIN_USER` and `ADMIN_PASSWORD_HASH` and unauthenticated requests get redirected to a login page. Leave them empty to run open — fine if it's Tailscale-only.
@@ -131,6 +166,31 @@ terminal/
   starship.toml   — Starship prompt (Catppuccin Mocha theme)
   .tmux.conf      — tmux config
 ```
+
+---
+
+## SSH from inside a session
+
+Sessions can inherit an SSH identity from the host so you can `ssh somehost` from a ghostpod tab without re-typing anything.
+
+On the host, drop the key material at `~/ghostpod/.ssh/`:
+
+```bash
+mkdir -p ~/ghostpod/.ssh
+cp ~/.ssh/id_ed25519      ~/ghostpod/.ssh/
+cp ~/.ssh/id_ed25519.pub  ~/ghostpod/.ssh/
+cp ~/.ssh/known_hosts     ~/ghostpod/.ssh/   # optional
+chmod 700 ~/ghostpod/.ssh
+chmod 600 ~/ghostpod/.ssh/id_ed25519
+```
+
+The orchestrator bind-mounts that directory into every spawned session read-only at `/tmp/.host-ssh`, and `terminal/entrypoint.sh` copies the files into the session user's `~/.ssh/` with the right owner and permissions.
+
+The copy looks only for these filenames: `id_ed25519`, `id_ed25519.pub`, `config`, `known_hosts`. Anything else is ignored.
+
+**Caveat on `config`** — it's copied verbatim. A Mac-style config with `Include "/Users/..."` paths, `IdentityFile` references to files that don't exist in the container (`~/.ssh/id_rsa`), or `Host <x>` entries forcing a different user will produce warnings or break name resolution in the session. If in doubt, skip the `config` file — the session defaults (`pi@<host>` with `id_ed25519`) work fine for most cases.
+
+Every session gets the same identity. Treat `~/ghostpod/.ssh/id_ed25519` as the identity for *the ghostpod deployment*, not necessarily your personal key.
 
 ---
 
