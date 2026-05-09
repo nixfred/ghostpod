@@ -1,0 +1,11 @@
+# Expose Caddy on host ports 80/443 for LAN mode.
+# Tailscale mode does not need this — Caddy binds to the tailscale/ listener
+# inside the container, so the host ports go unused.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.lan.yml up --build
+services:
+  caddy:
+    ports:
+      - "80:80"
+      - "443:443"

@@ -41,6 +41,8 @@ SESSION_NETWORK = os.getenv("SESSION_NETWORK", "ghostpod-sessions")
 TTYD_PORT      = 7681
 STATIC_DIR     = os.path.join(os.path.dirname(__file__), "static")
 
+SSH_KEYS_HOST_DIR = os.getenv("SSH_KEYS_HOST_DIR", "").strip()
+
 ADMIN_USER          = os.getenv("ADMIN_USER", "")
 ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
 SESSION_COOKIE      = "st_session"
@@ -291,6 +293,9 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
     try:
         session_name = _random_name()
+        session_volumes = {}
+        if SSH_KEYS_HOST_DIR:
+            session_volumes[SSH_KEYS_HOST_DIR] = {"bind": "/tmp/.host-ssh", "mode": "ro"}
         container = await loop.run_in_executor(
             None,
             lambda: docker_client.containers.run(
@@ -308,7 +313,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 mem_limit="512m",
                 memswap_limit="512m",
                 pids_limit=256,
-                volumes={"/home/pi/ghostpod/.ssh": {"bind": "/tmp/.host-ssh", "mode": "ro"}},
+                volumes=session_volumes,
             ),
         )
         log.info(f"[{session_id}] Container {container.short_id} started as '{session_name}'")

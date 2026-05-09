@@ -25,6 +25,7 @@ services:
       - ADMIN_USER=${ADMIN_USER:-}
       - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH:-}
       - SECRET_KEY=${SECRET_KEY:-}
+      - SSH_KEYS_HOST_DIR=${SSH_KEYS_HOST_DIR:-}
     networks:
       - default
       - sessions
