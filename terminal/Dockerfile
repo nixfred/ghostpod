@@ -28,19 +28,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf $(which fdfind) /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*
 
-# Create pi user with passwordless sudo
+# Session user — non-root, with passwordless sudo for ergonomics
 RUN useradd -m -s /bin/bash pi \
     && echo 'pi ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/pi \
     && chmod 440 /etc/sudoers.d/pi
 
-# Install nixbash as pi
-USER pi
-RUN curl -sL https://raw.githubusercontent.com/nixfred/nixbash/main/install.sh | bash
-USER root
-
-# Copy tmux config for pi
+# Bake in dotfiles. Sessions are ephemeral so no home volume.
+COPY .bashrc /home/pi/.bashrc
 COPY .tmux.conf /home/pi/.tmux.conf
-RUN chown pi:pi /home/pi/.tmux.conf
+RUN chown pi:pi /home/pi/.bashrc /home/pi/.tmux.conf
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
