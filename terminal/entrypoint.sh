@@ -6,10 +6,18 @@ mkdir -p /home/pi/.local/bin
 # Copy host SSH keys with correct ownership/permissions for pi
 if [ -d /tmp/.host-ssh ]; then
     mkdir -p /home/pi/.ssh
-    cp /tmp/.host-ssh/id_ed25519 /home/pi/.ssh/ 2>/dev/null && chmod 600 /home/pi/.ssh/id_ed25519
-    cp /tmp/.host-ssh/id_ed25519.pub /home/pi/.ssh/ 2>/dev/null && chmod 644 /home/pi/.ssh/id_ed25519.pub
-    cp /tmp/.host-ssh/config /home/pi/.ssh/ 2>/dev/null && chmod 600 /home/pi/.ssh/config
-    cp /tmp/.host-ssh/known_hosts /home/pi/.ssh/ 2>/dev/null && chmod 600 /home/pi/.ssh/known_hosts
+    # Everything in the directory is copied, not a fixed filename list: a host
+    # that needs more than one identity (an RSA key for older boxes alongside
+    # ed25519) would otherwise have the extra keys silently dropped.
+    for f in /tmp/.host-ssh/*; do
+        [ -f "$f" ] || continue
+        name=${f##*/}
+        cp "$f" /home/pi/.ssh/ 2>/dev/null || continue
+        case "$name" in
+            *.pub) chmod 644 "/home/pi/.ssh/$name" ;;
+            *)     chmod 600 "/home/pi/.ssh/$name" ;;
+        esac
+    done
     chown -R pi:pi /home/pi/.ssh
 fi
 

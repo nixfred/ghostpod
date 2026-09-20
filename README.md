@@ -207,9 +207,15 @@ SSH_KEYS_HOST_DIR=${PWD}/ghostpod-ssh
 
 The orchestrator bind-mounts that directory into every spawned session read-only at `/tmp/.host-ssh`, and `terminal/entrypoint.sh` copies the files into the session user's `~/.ssh/` with the right owner and permissions.
 
-The copy looks only for these filenames: `id_ed25519`, `id_ed25519.pub`, `config`, `known_hosts`. Anything else is ignored.
+Every file in the directory is copied. Private keys and `config` land as `600`, `.pub` files as `644`. That means a second identity works too — drop in an `id_rsa` alongside `id_ed25519` for older boxes that never got an ed25519 key, and reference both from `config`:
 
-**Caveat on `config`** — it's copied verbatim. A Mac-style config with `Include "/Users/..."` paths, `IdentityFile` references to files that don't exist in the container (`~/.ssh/id_rsa`), or `Host <x>` entries forcing a different user will produce warnings or break name resolution in the session. If in doubt, skip the `config` file — the session defaults (`pi@<host>` with `id_ed25519`) work fine for most cases.
+```
+Host *
+  IdentityFile ~/.ssh/id_ed25519
+  IdentityFile ~/.ssh/id_rsa
+```
+
+**Caveat on `config`** — it's copied verbatim. A Mac-style config with `Include "/Users/..."` paths, `ControlPath` directories that don't exist in the container, `IdentityFile` references to keys you didn't put in `SSH_KEYS_HOST_DIR`, or `Host <x>` entries forcing a different user will produce warnings or break name resolution in the session. If in doubt, skip the `config` file — the session defaults (`pi@<host>` with `id_ed25519`) work fine for most cases.
 
 Every session gets the same identity. Treat the key in `SSH_KEYS_HOST_DIR` as the identity for *the ghostpod deployment*, not necessarily your personal key.
 
