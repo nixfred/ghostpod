@@ -17,7 +17,26 @@ alias grep='grep --color=auto'
 alias fgrep='fgrep --color=auto'
 alias egrep='egrep --color=auto'
 
-# Start tmux automatically on interactive shells unless already inside one
-if command -v tmux >/dev/null && [ -z "$TMUX" ] && [ -n "$PS1" ]; then
-    :  # left as opt-in — uncomment to auto-attach: tmux attach -t main || tmux new -s main
+# Durable shells: `keep`
+#
+# This container is disposable by design — ttyd runs --once and the
+# orchestrator deletes the container the moment the WebSocket drops. On a
+# phone that fires constantly: iOS suspends a backgrounded tab, which closes
+# the socket, so switching apps loses the session. No browser setting changes
+# this; iOS gives a page no way to stay awake.
+#
+# So don't keep the work here. Keep it in tmux on a real host: the container
+# still dies, your shell doesn't, and you reattach where you left off.
+#
+#   keep              attach (or create) session "phone" on gus
+#   keep vic          same, on vic
+#   keep vic build    session "build" on vic
+keep() {
+    local host=${1:-gus} name=${2:-phone}
+    ssh -t "$host" "tmux new-session -A -s $(printf '%q' "$name")"
+}
+
+# Worth saying out loud, since the tab you read it in may not survive.
+if [ -n "$PS1" ]; then
+    printf '\033[2mtip: `keep` gives you a tmux shell on gus that survives this tab dying\033[0m\n'
 fi
