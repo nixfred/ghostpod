@@ -340,27 +340,47 @@ async def reap_idle_sessions(app: web.Application) -> None:
             _last_seen.pop(name, None)
 
 
-async def adopt_existing_sessions(app: web.Application) -> None:
-    """After a restart, take ownership of persistent containers already running.
+async def reconcile_sessions(app: web.Application) -> None:
+    """Reconcile leftover session containers at startup.
 
-    Their real idle time is unknown, so the clock starts now. Better to hold a
-    session slightly too long than to reap a shell somebody is about to return to.
+    Persistent ones are adopted: their real idle time is unknown, so the clock
+    starts now, since holding a session slightly too long beats reaping a shell
+    somebody is about to return to.
+
+    Ephemeral ones are removed. Any that exist at startup are orphans by
+    definition: the orchestrator that was proxying them is gone, so nothing will
+    ever run their teardown. Left alone they linger indefinitely with the session
+    SSH identity still mounted.
     """
-    if not PERSIST_SESSIONS:
-        return
     loop = asyncio.get_event_loop()
     try:
         found = await loop.run_in_executor(
             None,
-            lambda: docker_client.containers.list(all=True, filters={"label": "ghostpod.persist=1"}),
+            lambda: docker_client.containers.list(all=True, filters={"label": "ghostpod.session"}),
         )
     except Exception as exc:
         log.warning(f"Could not list existing sessions: {exc}")
         return
+
+    adopted, orphans = [], []
     for c in found:
-        _last_seen[c.name] = time.time()
-    if found:
-        log.info(f"Adopted {len(found)} persistent session(s): {', '.join(c.name for c in found)}")
+        if c.labels.get("ghostpod.persist") == "1":
+            if PERSIST_SESSIONS:
+                _last_seen[c.name] = time.time()
+                adopted.append(c.name)
+            else:
+                orphans.append(c)  # persistence was turned off; do not strand it
+        else:
+            orphans.append(c)
+
+    if adopted:
+        log.info(f"Adopted {len(adopted)} persistent session(s): {', '.join(adopted)}")
+    for c in orphans:
+        try:
+            await loop.run_in_executor(None, lambda c=c: c.remove(force=True))
+            log.info(f"[reconcile] Removed orphaned session container {c.name}")
+        except Exception as exc:
+            log.warning(f"[reconcile] Could not remove {c.name}: {exc}")
 
 
 async def _get_or_create_container(loop, name: str | None, session_id: str):
@@ -485,8 +505,9 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 # ── App factory ────────────────────────────────────────────────────────────────
 
 async def _on_startup(app: web.Application) -> None:
-    await adopt_existing_sessions(app)
-    app["reaper"] = asyncio.create_task(reap_idle_sessions(app))
+    await reconcile_sessions(app)
+    if PERSIST_SESSIONS:
+        app["reaper"] = asyncio.create_task(reap_idle_sessions(app))
 
 
 async def _on_cleanup(app: web.Application) -> None:
@@ -497,9 +518,10 @@ async def _on_cleanup(app: web.Application) -> None:
 
 def create_app() -> web.Application:
     app = web.Application()
-    if PERSIST_SESSIONS:
-        app.on_startup.append(_on_startup)
-        app.on_cleanup.append(_on_cleanup)
+    # Startup reconciliation runs in both modes: orphaned ephemeral containers
+    # need collecting whether or not persistence is on.
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
     app.router.add_get("/login", handle_login_get)
     app.router.add_post("/login", handle_login_post)
     app.router.add_get("/", handle_index)
