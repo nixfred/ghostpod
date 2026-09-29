@@ -9,6 +9,7 @@ services:
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY:-}
       - TS_HOSTNAME=${TS_HOSTNAME:-ghostpod}
+      - TS_TAILNET=${TS_TAILNET:-}
       - LAN_HOST=${LAN_HOST:-localhost}
     restart: unless-stopped
     depends_on:
@@ -26,6 +27,8 @@ services:
       - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH:-}
       - SECRET_KEY=${SECRET_KEY:-}
       - SSH_KEYS_HOST_DIR=${SSH_KEYS_HOST_DIR:-}
+      - PERSIST_SESSIONS=${PERSIST_SESSIONS:-}
+      - SESSION_IDLE_TIMEOUT=${SESSION_IDLE_TIMEOUT:-14400}
     networks:
       - default
       - sessions

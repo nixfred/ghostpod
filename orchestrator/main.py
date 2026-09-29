@@ -43,6 +43,22 @@ STATIC_DIR     = os.path.join(os.path.dirname(__file__), "static")
 
 SSH_KEYS_HOST_DIR = os.getenv("SSH_KEYS_HOST_DIR", "").strip()
 
+# Persistent sessions (opt-in). Off by default: ghostpod is ephemeral by design,
+# and a container that outlives its connection also outlives the moment its
+# mounted SSH identity was needed. Worth it on a phone, where iOS suspends any
+# backgrounded tab and closes the WebSocket, which otherwise destroys the shell
+# every time you glance at another app.
+PERSIST_SESSIONS = os.getenv("PERSIST_SESSIONS", "").strip().lower() in ("1", "true", "yes")
+# How long a disconnected session is held before it is reaped, in seconds.
+SESSION_IDLE_TIMEOUT = int(os.getenv("SESSION_IDLE_TIMEOUT", "14400"))  # 4 hours
+PERSIST_COOKIE = "gp_persist"
+REAP_INTERVAL = 60
+
+# container name -> unix time it was last disconnected; names currently proxied
+# are in _active and are never reaped while a client is attached.
+_last_seen: dict[str, float] = {}
+_active: set[str] = set()
+
 ADMIN_USER          = os.getenv("ADMIN_USER", "")
 ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
 SESSION_COOKIE      = "st_session"
@@ -266,7 +282,18 @@ async def handle_login_post(request: web.Request) -> web.Response:
 async def handle_index(request: web.Request) -> web.FileResponse:
     if not _authenticated(request):
         raise _login_redirect()
-    return web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    response = web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    # The handle that ties a browser back to its own held session. Set on the
+    # page rather than on /ws, so it is already present when the socket opens.
+    if PERSIST_SESSIONS and PERSIST_COOKIE not in request.cookies:
+        response.set_cookie(
+            PERSIST_COOKIE,
+            secrets.token_hex(16),
+            max_age=60 * 60 * 24 * 365,
+            httponly=True,
+            samesite="Strict",
+        )
+    return response
 
 
 async def handle_token(request: web.Request) -> web.Response:
@@ -278,6 +305,117 @@ async def handle_token(request: web.Request) -> web.Response:
     )
 
 
+def _persist_name(request: web.Request) -> str | None:
+    """Stable container name for this browser, or None if it has no cookie yet.
+
+    The cookie value is hashed rather than used directly: it arrives from the
+    client, and it ends up in a container name.
+    """
+    raw = request.cookies.get(PERSIST_COOKIE, "")
+    if not raw:
+        return None
+    digest = hashlib.sha256(f"{SECRET_KEY}:{raw}".encode()).hexdigest()[:16]
+    return f"gp-{digest}"
+
+
+async def reap_idle_sessions(app: web.Application) -> None:
+    """Remove persistent containers that nobody has come back to."""
+    loop = asyncio.get_event_loop()
+    while True:
+        await asyncio.sleep(REAP_INTERVAL)
+        now = time.time()
+        for name, last in list(_last_seen.items()):
+            if name in _active or now - last <= SESSION_IDLE_TIMEOUT:
+                continue
+            idle_min = int((now - last) / 60)
+            try:
+                victim = await loop.run_in_executor(None, lambda: docker_client.containers.get(name))
+                await loop.run_in_executor(None, lambda: victim.remove(force=True))
+                log.info(f"[reaper] Removed {name}, idle {idle_min}m")
+            except docker.errors.NotFound:
+                log.info(f"[reaper] {name} already gone")
+            except Exception as exc:
+                log.warning(f"[reaper] Could not remove {name}: {exc}")
+                continue
+            _last_seen.pop(name, None)
+
+
+async def adopt_existing_sessions(app: web.Application) -> None:
+    """After a restart, take ownership of persistent containers already running.
+
+    Their real idle time is unknown, so the clock starts now. Better to hold a
+    session slightly too long than to reap a shell somebody is about to return to.
+    """
+    if not PERSIST_SESSIONS:
+        return
+    loop = asyncio.get_event_loop()
+    try:
+        found = await loop.run_in_executor(
+            None,
+            lambda: docker_client.containers.list(all=True, filters={"label": "ghostpod.persist=1"}),
+        )
+    except Exception as exc:
+        log.warning(f"Could not list existing sessions: {exc}")
+        return
+    for c in found:
+        _last_seen[c.name] = time.time()
+    if found:
+        log.info(f"Adopted {len(found)} persistent session(s): {', '.join(c.name for c in found)}")
+
+
+async def _get_or_create_container(loop, name: str | None, session_id: str):
+    """Reuse this browser's container when persisting, otherwise make a fresh one.
+
+    Returns (container, reused).
+    """
+    if name:
+        try:
+            existing = await loop.run_in_executor(None, lambda: docker_client.containers.get(name))
+            if existing.status != "running":
+                log.info(f"[{session_id}] Restarting held container {name} (was {existing.status})")
+                await loop.run_in_executor(None, existing.start)
+            await loop.run_in_executor(None, existing.reload)
+            return existing, True
+        except docker.errors.NotFound:
+            pass
+
+    session_name = _random_name()
+    session_volumes = {}
+    if SSH_KEYS_HOST_DIR:
+        session_volumes[SSH_KEYS_HOST_DIR] = {"bind": "/tmp/.host-ssh", "mode": "ro"}
+
+    labels = {"ghostpod.session": session_id}
+    environment = {}
+    if name:
+        labels["ghostpod.persist"] = "1"
+        environment["GHOSTPOD_PERSIST"] = "1"
+
+    container = await loop.run_in_executor(
+        None,
+        lambda: docker_client.containers.run(
+            SESSION_IMAGE,
+            detach=True,
+            # A persistent session must survive its own stop, or a VM reboot
+            # would delete the shell it exists to preserve.
+            remove=not name,
+            network=SESSION_NETWORK,
+            name=name or f"{session_name}-{session_id}",
+            hostname=session_name,
+            labels=labels,
+            environment=environment,
+            # security_opt removed — breaks sudo for non-root user
+            cap_drop=["SYS_ADMIN", "NET_ADMIN", "SYS_MODULE", "SYS_RAWIO",
+                       "SYS_BOOT", "SYS_PTRACE", "AUDIT_WRITE", "AUDIT_CONTROL",
+                       "MAC_ADMIN", "MAC_OVERRIDE", "SYSLOG"],
+            mem_limit="512m",
+            memswap_limit="512m",
+            pids_limit=256,
+            volumes=session_volumes,
+        ),
+    )
+    return container, False
+
+
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     if not _authenticated(request):
         raise web.HTTPUnauthorized()
@@ -285,6 +423,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     session_id = str(uuid.uuid4())[:8]
     container = None
     loop = asyncio.get_event_loop()
+    persist_name = _persist_name(request) if PERSIST_SESSIONS else None
 
     log.info(f"[{session_id}] New session")
 
@@ -292,31 +431,13 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     await ws_browser.prepare(request)
 
     try:
-        session_name = _random_name()
-        session_volumes = {}
-        if SSH_KEYS_HOST_DIR:
-            session_volumes[SSH_KEYS_HOST_DIR] = {"bind": "/tmp/.host-ssh", "mode": "ro"}
-        container = await loop.run_in_executor(
-            None,
-            lambda: docker_client.containers.run(
-                SESSION_IMAGE,
-                detach=True,
-                remove=True,
-                network=SESSION_NETWORK,
-                name=f"{session_name}-{session_id}",
-                hostname=session_name,
-                labels={"ghostpod.session": session_id},
-                # security_opt removed — breaks sudo for non-root user
-                cap_drop=["SYS_ADMIN", "NET_ADMIN", "SYS_MODULE", "SYS_RAWIO",
-                           "SYS_BOOT", "SYS_PTRACE", "AUDIT_WRITE", "AUDIT_CONTROL",
-                           "MAC_ADMIN", "MAC_OVERRIDE", "SYSLOG"],
-                mem_limit="512m",
-                memswap_limit="512m",
-                pids_limit=256,
-                volumes=session_volumes,
-            ),
-        )
-        log.info(f"[{session_id}] Container {container.short_id} started as '{session_name}'")
+        container, reused = await _get_or_create_container(loop, persist_name, session_id)
+        if reused:
+            log.info(f"[{session_id}] Reattaching to held session {container.name}")
+        else:
+            log.info(f"[{session_id}] Container {container.short_id} started as '{container.name}'")
+        if persist_name:
+            _active.add(persist_name)
 
         await loop.run_in_executor(None, container.reload)
         container_ip = (
@@ -343,7 +464,14 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         if not ws_browser.closed:
             await ws_browser.close(code=1011, message=b"Internal server error")
     finally:
-        if container:
+        if persist_name:
+            # Leave it running. This is the whole point: the browser went away,
+            # the shell did not. The reaper collects it if nobody returns.
+            _active.discard(persist_name)
+            _last_seen[persist_name] = time.time()
+            log.info(f"[{session_id}] Holding {persist_name} for reattach "
+                     f"(reaped after {SESSION_IDLE_TIMEOUT // 60}m idle)")
+        elif container:
             try:
                 await loop.run_in_executor(None, lambda: container.stop(timeout=3))
                 log.info(f"[{session_id}] Container stopped")
@@ -356,8 +484,22 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
 # ── App factory ────────────────────────────────────────────────────────────────
 
+async def _on_startup(app: web.Application) -> None:
+    await adopt_existing_sessions(app)
+    app["reaper"] = asyncio.create_task(reap_idle_sessions(app))
+
+
+async def _on_cleanup(app: web.Application) -> None:
+    task = app.get("reaper")
+    if task:
+        task.cancel()
+
+
 def create_app() -> web.Application:
     app = web.Application()
+    if PERSIST_SESSIONS:
+        app.on_startup.append(_on_startup)
+        app.on_cleanup.append(_on_cleanup)
     app.router.add_get("/login", handle_login_get)
     app.router.add_post("/login", handle_login_post)
     app.router.add_get("/", handle_index)
@@ -372,5 +514,9 @@ if __name__ == "__main__":
         log.info(f"Auth enabled for user '{ADMIN_USER}'")
     else:
         log.warning("Auth disabled — set ADMIN_USER and ADMIN_PASSWORD_HASH to enable")
+    if PERSIST_SESSIONS:
+        log.info(f"Persistent sessions ON — held {SESSION_IDLE_TIMEOUT // 60}m after disconnect")
+    else:
+        log.info("Persistent sessions OFF — every connection gets a fresh container")
     app = create_app()
     web.run_app(app, host="0.0.0.0", port=8080)

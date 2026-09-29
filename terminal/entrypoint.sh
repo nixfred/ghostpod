@@ -21,11 +21,29 @@ if [ -d /tmp/.host-ssh ]; then
     chown -R pi:pi /home/pi/.ssh
 fi
 
-# ttyd --once exits after the first client disconnects.
-# The container has --rm, so Docker removes it immediately after.
-exec ttyd \
-  --once \
-  --port 7681 \
-  --writable \
-  -t rendererType=dom \
-  su - pi
+# Two modes, chosen by the orchestrator via GHOSTPOD_PERSIST.
+#
+# Ephemeral (default): ttyd --once exits after the first client disconnects and
+# the container has --rm, so Docker removes it immediately after.
+#
+# Persistent: --once is dropped so ttyd keeps serving, and the shell runs inside
+# tmux so the state lives in the tmux server rather than in the connection. A
+# phone locking its screen, or iOS suspending a background tab, drops the
+# WebSocket; on return ttyd accepts a new client which reattaches to the same
+# tmux session, with the same scrollback and the same running processes. Without
+# tmux, a reconnect would still land in a brand-new shell even though the
+# container survived.
+if [ -n "$GHOSTPOD_PERSIST" ]; then
+    exec ttyd \
+      --port 7681 \
+      --writable \
+      -t rendererType=dom \
+      su - pi -c 'exec tmux new-session -A -s main'
+else
+    exec ttyd \
+      --once \
+      --port 7681 \
+      --writable \
+      -t rendererType=dom \
+      su - pi
+fi
