@@ -279,12 +279,15 @@ async def handle_login_post(request: web.Request) -> web.Response:
     )
 
 
-async def handle_index(request: web.Request) -> web.FileResponse:
-    if not _authenticated(request):
-        raise _login_redirect()
-    response = web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
-    # The handle that ties a browser back to its own held session. Set on the
-    # page rather than on /ws, so it is already present when the socket opens.
+def _issue_persist_cookie(request: web.Request, response: web.StreamResponse) -> None:
+    """Give this browser the handle that ties it back to its own held session.
+
+    Issued on both / and /token, because a phone frequently never requests the
+    page again: iOS restores a backgrounded tab from cache, so the page's JS runs
+    and calls /token and /ws while GET / never happens. Setting this only on the
+    page meant a restored tab arrived with no cookie and got a fresh container,
+    which is the exact bug persistence exists to fix.
+    """
     if PERSIST_SESSIONS and PERSIST_COOKIE not in request.cookies:
         response.set_cookie(
             PERSIST_COOKIE,
@@ -293,28 +296,53 @@ async def handle_index(request: web.Request) -> web.FileResponse:
             httponly=True,
             samesite="Strict",
         )
+
+
+async def handle_index(request: web.Request) -> web.FileResponse:
+    if not _authenticated(request):
+        raise _login_redirect()
+    response = web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    _issue_persist_cookie(request, response)
     return response
 
 
 async def handle_token(request: web.Request) -> web.Response:
     if not _authenticated(request):
         raise web.HTTPUnauthorized()
-    return web.Response(
+    response = web.Response(
         content_type="application/json",
         text=json.dumps({"token": ""}),
     )
+    # Never cache this: it is the one request a restored tab reliably makes, and
+    # it is where the session cookie gets issued.
+    response.headers["Cache-Control"] = "no-store"
+    _issue_persist_cookie(request, response)
+    return response
 
 
 def _persist_name(request: web.Request) -> str | None:
-    """Stable container name for this browser, or None if it has no cookie yet.
+    """Stable container name for this client, or None if it cannot be identified.
 
-    The cookie value is hashed rather than used directly: it arrives from the
-    client, and it ends up in a container name.
+    Prefers the cookie. Falls back to the client address, because a browser can
+    reach /ws with no cookie at all: iOS restores a cached tab whose JS opens the
+    socket, and on the very first connection the Set-Cookie from /token has not
+    necessarily been stored yet. On a tailnet each device has its own stable
+    address, so it identifies a device well enough to hand back the same shell.
+    Two browsers on one device then share a session, which is the right trade
+    against handing someone a new container and losing their work.
+
+    Either value is hashed rather than used directly: both come from the client
+    and both end up in a container name.
     """
     raw = request.cookies.get(PERSIST_COOKIE, "")
+    source = "cookie"
+    if not raw:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        raw = forwarded.split(",")[0].strip() or (request.remote or "")
+        source = "addr"
     if not raw:
         return None
-    digest = hashlib.sha256(f"{SECRET_KEY}:{raw}".encode()).hexdigest()[:16]
+    digest = hashlib.sha256(f"{SECRET_KEY}:{source}:{raw}".encode()).hexdigest()[:16]
     return f"gp-{digest}"
 
 
@@ -445,7 +473,11 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     loop = asyncio.get_event_loop()
     persist_name = _persist_name(request) if PERSIST_SESSIONS else None
 
-    log.info(f"[{session_id}] New session")
+    if persist_name:
+        how = "cookie" if PERSIST_COOKIE in request.cookies else "client address"
+        log.info(f"[{session_id}] New session (identity via {how} -> {persist_name})")
+    else:
+        log.info(f"[{session_id}] New session (ephemeral)")
 
     ws_browser = web.WebSocketResponse(protocols=["tty"])
     await ws_browser.prepare(request)
